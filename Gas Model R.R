@@ -91,7 +91,12 @@ data.frame(Model = c("Model1", "Model2", "Model3"),
            RMSE = c(rmse1, rmse2, rmse3),
            R2 = c(rsq1, rsq2, rsq3))
 
-#Model 2 shows the best results but lets inspect the coefficients to further asses model validity.
+#Model 2 shows the best results with the lowest RMSE value. This suggests that variables Pban and COban
+#do not add value to the predictive model. A possible explanation for this is that the start of the Ukraine
+#War signaled to market investors that a Russian Petroleum and Crude Oil export ban is likely to be
+#actioned. Therefore, the gas price rise explained by the War variable already factored in these sanctions.
+
+#Model 2 shows the best results but let's inspect the coefficients to further assess model validity.
 model2_coefficients <- coef(model2$finalModel)
 print(model2_coefficients)
 
@@ -99,7 +104,7 @@ print(model2_coefficients)
 model3_coefficients <- coef(model3$finalModel)
 print(model3_coefficients)
 
-#Final Linear Model - Gas Prices against Temperature and War in Ukraine on full data set:
+#Final Linear Model - Gas Prices against Temperature and War in Ukraine on the full data set:
 linear_model <- train(P.therm ~ Temp + War, data = original_data, method = "lm")
 linear_model_coefficients <- coef(linear_model$finalModel)
 print(linear_model_coefficients)
