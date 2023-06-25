@@ -45,6 +45,17 @@ library(ggplot2)
 #Import Data Set:
 original_data <- read.csv("gas_data.csv")
 
+#Adding Weekday, Month and Year features for later xGboost Modelling:
+original_data$Date <- as.Date(original_data$Date, format ="%d/%m/%Y")
+original_data$Weekday <- weekdays(original_data$Date)
+original_data$Month <- format(original_data$Date, "%m")
+original_data$Year <- format(original_data$Date, "%Y")
+
+#Advanced models such Gradient Boosting Machines are able to incorporate 
+#considerations of how market trading hours/days effect the day ahead price.
+#The month feature should encourage the Machine Learning model to consider how
+#seasonal differences influence gas prices.
+
 #############################
 #Linear Regression Modelling#
 #############################
@@ -93,8 +104,8 @@ data.frame(Model = c("Model1", "Model2", "Model3"),
 
 #Model 2 shows the best results with the lowest RMSE value. This suggests that variables Pban and COban
 #do not add value to the predictive model. A possible explanation for this is that the start of the Ukraine
-#War signaled to market investors that a Russian Petroleum and Crude Oil export ban is likely to be
-#actioned. Therefore, the gas price rise explained by the War variable already factored in these sanctions.
+#War signaled to market investors that a Russian Petroleum and Crude Oil export ban is likely to occur
+#Therefore, the gas price rise explained by the War variable already factored in these sanctions.
 
 #Model 2 shows the best results but let's inspect the coefficients to further assess model validity.
 model2_coefficients <- coef(model2$finalModel)
@@ -110,14 +121,31 @@ linear_model_coefficients <- coef(linear_model$finalModel)
 print(linear_model_coefficients)
 
 #########
-#xGboost#
+#xGBoost#
 #########
 
-#Prepare the data for xGBoost by converting it into a matrix:
-train_data_matrix <- model.matrix(P.therm ~ Temp + War + COban + Pban, data = train_data)[,-1]
-test_data_matrix <- model.matrix(P.therm ~ Temp + War + COban + Pban, data = test_data)[,-1]
+#Standardize P.therm
+standardize <- function(x) {
+  return((x - mean(x)) / sd(x))
+}
 
-#Train the test xGboost model:
+inverse_standardize <- function(x, original_mean, original_sd) {
+  return(x * original_sd + original_mean)
+}
+
+# Save original mean and standard deviation for inverse standardization later
+original_mean <- mean(original_data$P.therm, na.rm = TRUE)
+original_sd <- sd(original_data$P.therm, na.rm = TRUE)
+
+#Standardize P.therm in the training and test data
+train_data$P.therm <- standardize(train_data$P.therm)
+test_data$P.therm <- standardize(test_data$P.therm)
+
+#Prepare the data for xGBoost by converting it into a matrix
+train_data_matrix <- model.matrix(P.therm ~ Temp + War + Weekday + Month + Year, data = train_data)[,-1]
+test_data_matrix <- model.matrix(P.therm ~ Temp + War + Weekday + Month + Year, data = test_data)[,-1]
+
+#Train the test xGBoost model
 set.seed(100)
 xgb_params <- list(objective = "reg:squarederror", eval_metric = "rmse", eta = 0.01, max_depth = 6)
 
@@ -126,89 +154,83 @@ xgb_test_data <- xgb.DMatrix(data = test_data_matrix, label = test_data$P.therm)
 
 xgb_model <- xgb.train(params = xgb_params, data = xgb_train_data, nrounds = 1000, early_stopping_rounds = 10, watchlist = list(val = xgb_test_data), verbose = 0)
 
-#Evaluate the performance of the test model:
-xgb_pred <- predict(xgb_model, newdata = xgb_test_data)
-
-xgb_rmse <- RMSE(xgb_pred, test_data$P.therm)
-xgb_r2 <- R2(xgb_pred, test_data$P.therm)
-
-data.frame(Model = c("XGBoost"), RMSE = c(xgb_rmse), R2 = c(xgb_r2))
-
-#Train xGBoost model on the entire data set:
-
-original_data_matrix <- model.matrix(P.therm ~ Temp + War + COban + Pban, data = original_data)[,-1]
+# Train xGBoost model on the entire data set
+original_data$P.therm <- standardize(original_data$P.therm)
+original_data_matrix <- model.matrix(P.therm ~ Temp + War + Weekday + Month + Year, data = original_data)[,-1]
 xgb_original_data <- xgb.DMatrix(data = original_data_matrix, label = original_data$P.therm)
 xgb_model_full <- xgb.train(params = xgb_params, data = xgb_original_data, nrounds = 1000)
 
-#Extract the importance of each predictor variable in the final model:
-importance_matrix <- xgb.importance(feature_names = colnames(train_data_matrix), model = xgb_model_full)
-print(importance_matrix)
-
-#Save the final model to use in the app:
-saveRDS(xgb_model_full, "xgb_model_full.rds")
-
 #############
-#Forecasting#
+#Forecasting# 
 #############
+#In normal forecasting, you would train the predictive models on lagged variables to later
+#predict future outcomes with the most current data. However, in this example, we have
+#quite a short snippet of static data which captures a particularly turbulent time for the
+#market. Consequently, I decided to fabricate a fictional next year data set to make 
+#forecasting predictions on.
 
-#Define Forecast Date Range:
+# Define Forecast Date Range:
 start_date <- as.Date("2023-04-01")
 end_date <- as.Date("2024-03-31")
 date_seq <- seq(from = start_date, to = end_date, by = "day")
 
-#Create a data frame for the latest year of data to run the forecast with:
+# Create a data frame for the latest year of data to run the forecast with:
 last_date <- as.Date("2023-03-30")
-start_date_prev_year <- last_date - 365  # 365 days before the last date
+start_date_prev_year <- last_date - 365 # 365 days before the last date
 prev_year_data <- original_data[as.Date(original_data$Date, format = "%d/%m/%Y") > start_date_prev_year &
                                   as.Date(original_data$Date, format = "%d/%m/%Y") <= last_date, ]
 
-#Create a new data set with the next full year's dates and average seasonal temps:
+# Create a new data set with the next full year's dates:
 next_year_data <- prev_year_data
 next_year_data$Date <- as.Date(next_year_data$Date, format = "%d/%m/%Y") + 365 # Add 1 year to the date
 
 # Set the boolean variables to 1 (True)
 next_year_data$War <- 1
-next_year_data$COban <- 1
-next_year_data$Pban <- 1
 
-#Remove the P.therm variable
+# Remove the P.therm, COban and Pban variables
 next_year_data$P.therm <- NULL
+next_year_data$COban <- NULL
+next_year_data$Pban <- NULL
 
-#Create a CSV file for next year data to reuse in later projects:
-write.csv(next_year_data, file = "next_year_data.csv") #WARNING: Adds extra column to data set.
+# Add the Weekday, Month and Year Features back in:
+next_year_data$Weekday <- weekdays(next_year_data$Date)
+next_year_data$Month <- format(next_year_data$Date, "%m")
+next_year_data$Year <- format(next_year_data$Date, "%Y")
 
-#Convert next_year_data into a matrix format suitable for XGBoost
-next_year_data_matrix <- model.matrix(~ Temp + War + COban + Pban, data = next_year_data)[,-1]
+# One-hot encode the Weekday, Month, and Year columns
+next_year_data$Weekday <- as.factor(next_year_data$Weekday)
+next_year_data$Month <- as.factor(next_year_data$Month)
+next_year_data$Year <- as.factor(next_year_data$Year)
 
-#Convert the matrix to an xgb.DMatrix
-xgb_next_year_data <- xgb.DMatrix(data = next_year_data_matrix)
+# Get feature names from the model
+model_features <- xgb_model_full$feature_names
 
-#Generate the gas price forecast using the xgb_model_full
-next_year_data$P.therm_forecast <- predict(xgb_model_full, newdata = xgb_next_year_data)
+# Exclude the Date column and convert the data frame to a matrix
+next_year_data_matrix <- model.matrix(~ Temp + War + Weekday + Month - 1, data = next_year_data)
 
-#Define Mark to Market value:
-next_year_data$M2M  <- 294.02*0.5096 + next_year_data$P.therm_forecast * (1 - 0.5096)
+# Convert to data frame to easily manipulate columns
+next_year_data_df <- as.data.frame(next_year_data_matrix)
 
+# Add missing columns (if any) with 0 values
+missing_cols <- setdiff(model_features, colnames(next_year_data_df))
+for(col in missing_cols) {
+  next_year_data_df[[col]] <- 0
+}
 
+# Select and reorder columns to match the model's feature names
+next_year_data_df <- next_year_data_df[, model_features]
 
+# Convert the data frame to an xgb.DMatrix
+xgb_next_year_data <- xgb.DMatrix(data = as.matrix(next_year_data_df))
 
+# Make predictions
+next_year_data$P.therm_forecast_standardized <- predict(xgb_model_full, xgb_next_year_data)
 
+# Inverse standardize the predictions to bring them to the original scale
+next_year_data$P.therm_forecast <- inverse_standardize(next_year_data$P.therm_forecast_standardized, original_mean, original_sd)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# Define Mark to Market value
+next_year_data$M2M <- 295*0.15 + next_year_data$P.therm_forecast * (1 - 0.15)
 
 ######
 #Plot#
